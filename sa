@@ -1,0 +1,832 @@
+getgenv().Desync = false
+getgenv().KeyBind = Enum.KeyCode.M
+getgenv().DirectionToShoot = "Behind"
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local SoundService = game:GetService("SoundService")
+local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+
+local OriginalVelocity = nil
+local DesyncDirection = Vector3.new(0, 0, -1)
+local ServerBall = nil
+
+local Directions = {
+    {Name = "Behind", Value = Vector3.new(0, 0, -1)},
+    {Name = "Forward", Value = Vector3.new(0, 0, 1)},
+    {Name = "Left", Value = Vector3.new(-1, 0, 0)},
+    {Name = "Right", Value = Vector3.new(1, 0, 0)},
+    {Name = "Down", Value = Vector3.new(0, -1, 0)},
+    {Name = "Up", Value = Vector3.new(0, 1, 0)},
+    {Name = "Zero", Value = Vector3.new(0, 0, 0)},
+}
+
+local SAVE_FOLDER = "Anti Lock"
+local SAVE_FILE = SAVE_FOLDER .. "/DesyncSettings.json"
+
+pcall(function()
+    if not isfolder(SAVE_FOLDER) then
+        makefolder(SAVE_FOLDER)
+    end
+end)
+
+local function saveSettings()
+    local data = {
+        KeyBind = getgenv().KeyBind.Name,
+        Direction = getgenv().DirectionToShoot,
+        DesyncOn = getgenv().Desync
+    }
+    pcall(function()
+        writefile(SAVE_FILE, HttpService:JSONEncode(data))
+    end)
+end
+
+local function loadSettings()
+    pcall(function()
+        if isfile(SAVE_FILE) then
+            local raw = readfile(SAVE_FILE)
+            local data = HttpService:JSONDecode(raw)
+            if data.KeyBind then
+                local ok, key = pcall(function() return Enum.KeyCode[data.KeyBind] end)
+                if ok and key then
+                    getgenv().KeyBind = key
+                end
+            end
+            if data.Direction then
+                getgenv().DirectionToShoot = data.Direction
+            end
+            if data.DesyncOn ~= nil then
+                getgenv().Desync = data.DesyncOn
+            end
+        end
+    end)
+end
+
+loadSettings()
+
+for _, d in ipairs(Directions) do
+    if d.Name == getgenv().DirectionToShoot then
+        DesyncDirection = d.Value
+        break
+    end
+end
+
+local IS_MOBILE = UserInputService.TouchEnabled
+local SCALE = IS_MOBILE and (1 / 2.2) or 1
+local function s(v) return math.floor(v * SCALE) end
+
+local COL = {
+    BgMain = Color3.fromRGB(14, 10, 10),
+    StrokeMain = Color3.fromRGB(150, 30, 30),
+    Div = Color3.fromRGB(60, 15, 15),
+    RowBg = Color3.fromRGB(20, 14, 14),
+    RowStroke = Color3.fromRGB(50, 20, 20),
+    TextOn = Color3.fromRGB(255, 255, 255),
+    TextOff = Color3.fromRGB(160, 120, 120),
+    Danger = Color3.fromRGB(255, 60, 60),
+    ToggleBgOn = Color3.fromRGB(200, 40, 40),
+    ToggleBgOff = Color3.fromRGB(40, 20, 20),
+    Dot = Color3.fromRGB(255, 255, 255),
+    AccentOff = Color3.fromRGB(100, 30, 30),
+    DropdownBg = Color3.fromRGB(18, 12, 12),
+    DropdownHover = Color3.fromRGB(35, 18, 18),
+    StatusOn = Color3.fromRGB(200, 40, 40),
+    StatusOff = Color3.fromRGB(60, 30, 30),
+    ButtonBg = Color3.fromRGB(180, 35, 35),
+    ButtonHover = Color3.fromRGB(220, 50, 50),
+}
+
+local CLICK_SOUND_ID = "rbxassetid://100809160609628"
+local clickSound = SoundService:FindFirstChild("DesyncClickSound")
+if not clickSound then
+    clickSound = Instance.new("Sound")
+    clickSound.Name = "DesyncClickSound"
+    clickSound.SoundId = CLICK_SOUND_ID
+    clickSound.Volume = 0.5
+    clickSound.Parent = SoundService
+end
+
+local function playClick()
+    task.spawn(function()
+        pcall(function()
+            clickSound:Stop()
+            clickSound:Play()
+        end)
+    end)
+end
+
+local function corner(inst, px)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, px or s(10))
+    c.Parent = inst
+    return c
+end
+
+local function strokeUI(inst, color, thickness, transparency)
+    local st = Instance.new("UIStroke")
+    st.Color = color
+    st.Thickness = thickness or 1
+    st.Transparency = transparency or 0
+    st.Parent = inst
+    return st
+end
+
+if LocalPlayer:WaitForChild("PlayerGui"):FindFirstChild("DesyncNotifyGui") then
+    LocalPlayer.PlayerGui.DesyncNotifyGui:Destroy()
+end
+if LocalPlayer:WaitForChild("PlayerGui"):FindFirstChild("DesyncPanelGui") then
+    LocalPlayer.PlayerGui.DesyncPanelGui:Destroy()
+end
+
+local function removeServerBall()
+    if ServerBall and ServerBall.Parent then
+        ServerBall:Destroy()
+        ServerBall = nil
+    end
+end
+
+local function createServerBall()
+    removeServerBall()
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    local root = LocalPlayer.Character.HumanoidRootPart
+
+    local ball = Instance.new("Part")
+    ball.Name = "ServerPositionBall"
+    ball.Shape = Enum.PartType.Ball
+    ball.Size = Vector3.new(4, 4, 4)
+    ball.Color = Color3.fromRGB(200, 30, 30)
+    ball.Material = Enum.Material.Neon
+    ball.Anchored = true
+    ball.CanCollide = false
+    ball.Transparency = 0.3
+    ball.Position = root.Position
+    ball.Parent = workspace
+
+    local billboardGui = Instance.new("BillboardGui")
+    billboardGui.Size = UDim2.new(0, 120, 0, 50)
+    billboardGui.StudsOffset = Vector3.new(0, 4, 0)
+    billboardGui.AlwaysOnTop = true
+    billboardGui.Parent = ball
+
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(1, 0, 0.5, 0)
+    titleLabel.Position = UDim2.new(0, 0, 0, 0)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = "Server Position"
+    titleLabel.TextColor3 = Color3.fromRGB(255, 60, 60)
+    titleLabel.Font = Enum.Font.GothamBlack
+    titleLabel.TextSize = 14
+    titleLabel.TextStrokeTransparency = 0.5
+    titleLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    titleLabel.Parent = billboardGui
+
+    local distLabel = Instance.new("TextLabel")
+    distLabel.Name = "DistLabel"
+    distLabel.Size = UDim2.new(1, 0, 0.5, 0)
+    distLabel.Position = UDim2.new(0, 0, 0.5, 0)
+    distLabel.BackgroundTransparency = 1
+    distLabel.Text = "0 studs"
+    distLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    distLabel.Font = Enum.Font.GothamBold
+    distLabel.TextSize = 12
+    distLabel.TextStrokeTransparency = 0.5
+    distLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    distLabel.Parent = billboardGui
+
+    ServerBall = ball
+end
+
+local function updateServerBallPosition()
+    if not ServerBall or not ServerBall.Parent then return end
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    ServerBall.Position = LocalPlayer.Character.HumanoidRootPart.Position
+end
+
+local function showDesyncNotification(text, notifType, duration)
+    local oldGui = LocalPlayer.PlayerGui:FindFirstChild("DesyncNotifyGui")
+    if oldGui then oldGui:Destroy() end
+
+    local notifGui = Instance.new("ScreenGui")
+    notifGui.Name = "DesyncNotifyGui"
+    notifGui.ResetOnSpawn = false
+    notifGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    notifGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+    local notifW = s(380)
+    local notifH = s(44)
+
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(0, notifW, 0, notifH)
+    mainFrame.Position = UDim2.new(0.5, -notifW / 2, 1, notifH + s(20))
+    mainFrame.BackgroundColor3 = COL.BgMain
+    mainFrame.BorderSizePixel = 0
+    mainFrame.ZIndex = 10
+    mainFrame.Parent = notifGui
+    corner(mainFrame, s(8))
+
+    local notifStrokeColor = COL.StrokeMain
+    if notifType == "off" then
+        notifStrokeColor = COL.AccentOff
+    elseif notifType == "warn" then
+        notifStrokeColor = Color3.fromRGB(200, 150, 30)
+    end
+
+    strokeUI(mainFrame, notifStrokeColor, 1, 0)
+
+    local accentBar = Instance.new("Frame")
+    accentBar.Size = UDim2.new(0, s(4), 1, -s(16))
+    accentBar.Position = UDim2.new(0, s(8), 0, s(8))
+    accentBar.BorderSizePixel = 0
+    accentBar.ZIndex = 11
+    accentBar.Parent = mainFrame
+    corner(accentBar, s(4))
+
+    if notifType == "on" then
+        accentBar.BackgroundColor3 = COL.Danger
+    elseif notifType == "off" then
+        accentBar.BackgroundColor3 = COL.AccentOff
+    elseif notifType == "warn" then
+        accentBar.BackgroundColor3 = Color3.fromRGB(200, 150, 30)
+    else
+        accentBar.BackgroundColor3 = COL.StrokeMain
+    end
+
+    local notifText = Instance.new("TextLabel")
+    notifText.Text = text
+    notifText.Size = UDim2.new(1, -s(30), 1, 0)
+    notifText.Position = UDim2.new(0, s(22), 0, 0)
+    notifText.BackgroundTransparency = 1
+    notifText.TextColor3 = COL.TextOn
+    notifText.Font = Enum.Font.GothamBold
+    notifText.TextSize = s(11)
+    notifText.TextWrapped = true
+    notifText.ZIndex = 11
+    notifText.TextYAlignment = Enum.TextYAlignment.Center
+    notifText.TextXAlignment = Enum.TextXAlignment.Left
+    notifText.Parent = mainFrame
+
+    playClick()
+
+    local targetPos = UDim2.new(0.5, -notifW / 2, 1, -notifH - s(100))
+    TweenService:Create(mainFrame, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Position = targetPos
+    }):Play()
+
+    task.delay(duration or 5, function()
+        if not notifGui or not notifGui.Parent then return end
+        local outPos = UDim2.new(0.5, -notifW / 2, 1, notifH + s(20))
+        TweenService:Create(mainFrame, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Position = outPos
+        }):Play()
+        task.wait(0.5)
+        if notifGui then notifGui:Destroy() end
+    end)
+end
+
+local function getCrouchAnimation()
+    local animationsFolder = ReplicatedStorage:FindFirstChild("Animations")
+    if animationsFolder then
+        local crouchAnim = animationsFolder:FindFirstChild("crouch")
+        if crouchAnim then
+            return crouchAnim
+        end
+        for _, child in pairs(animationsFolder:GetChildren()) do
+            if child.Name:lower():find("crouch") then
+                return child
+            end
+        end
+    end
+    for _, child in pairs(ReplicatedStorage:GetDescendants()) do
+        if child:IsA("Animation") and child.Name:lower():find("crouch") then
+            return child
+        end
+    end
+    return nil
+end
+
+local function findKatanaTool()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local bp = LocalPlayer:FindFirstChild("Backpack")
+    if bp then
+        for _, tool in pairs(bp:GetChildren()) do
+            if tool:IsA("Tool") and tool.Name:lower():find("katana") then
+                return tool
+            end
+        end
+    end
+    if char then
+        for _, tool in pairs(char:GetChildren()) do
+            if tool:IsA("Tool") and tool.Name:lower():find("katana") then
+                return tool
+            end
+        end
+    end
+    return nil
+end
+
+local function performDesyncSequence()
+    local char = LocalPlayer.Character
+    if not char then return false end
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return false end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+    local animator = humanoid:FindFirstChildOfClass("Animator")
+    if not animator then
+        animator = Instance.new("Animator")
+        animator.Parent = humanoid
+    end
+
+    local crouchAnimation = getCrouchAnimation()
+    local crouchTrack = nil
+
+    if crouchAnimation then
+        crouchTrack = animator:LoadAnimation(crouchAnimation)
+        crouchTrack:Play()
+    end
+
+    task.wait(0.3)
+
+    humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+
+    task.wait(0.2)
+
+    local katana = findKatanaTool()
+    if katana then
+        if katana.Parent == LocalPlayer.Backpack then
+            humanoid:EquipTool(katana)
+        end
+    end
+
+    task.wait(0.3)
+
+    if crouchTrack then
+        crouchTrack:Stop()
+    end
+
+    task.wait(0.2)
+
+    updateServerBallPosition()
+
+    return true
+end
+
+local PanelGui = Instance.new("ScreenGui")
+PanelGui.Name = "DesyncPanelGui"
+PanelGui.ResetOnSpawn = false
+PanelGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+PanelGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local panelW = s(260)
+local panelH = s(300)
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, panelW, 0, panelH)
+MainFrame.Position = UDim2.new(0, s(20), 0, s(20))
+MainFrame.BackgroundColor3 = COL.BgMain
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Parent = PanelGui
+corner(MainFrame, s(8))
+strokeUI(MainFrame, COL.StrokeMain, 1, 0)
+
+local dragging, dragInput, dragStart, startPos
+MainFrame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = MainFrame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+MainFrame.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        local delta = input.Position - dragStart
+        MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+local PanelTitle = Instance.new("TextLabel", MainFrame)
+PanelTitle.Size = UDim2.new(1, -s(16), 0, s(36))
+PanelTitle.Position = UDim2.new(0, s(16), 0, 0)
+PanelTitle.BackgroundTransparency = 1
+PanelTitle.Text = "Desync Panel"
+PanelTitle.TextColor3 = COL.TextOn
+PanelTitle.Font = Enum.Font.GothamBold
+PanelTitle.TextSize = s(14)
+PanelTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local PanelDiv = Instance.new("Frame", MainFrame)
+PanelDiv.Size = UDim2.new(1, 0, 0, math.max(1, s(1)))
+PanelDiv.Position = UDim2.new(0, 0, 0, s(36))
+PanelDiv.BackgroundColor3 = COL.Div
+PanelDiv.BorderSizePixel = 0
+
+local ToggleRow = Instance.new("Frame", MainFrame)
+ToggleRow.Size = UDim2.new(1, -s(20), 0, s(34))
+ToggleRow.Position = UDim2.new(0, s(10), 0, s(46))
+ToggleRow.BackgroundColor3 = COL.RowBg
+corner(ToggleRow, s(6))
+strokeUI(ToggleRow, COL.RowStroke, 1, 0)
+
+local ToggleLabel = Instance.new("TextLabel", ToggleRow)
+ToggleLabel.Size = UDim2.new(0.5, 0, 1, 0)
+ToggleLabel.Position = UDim2.new(0, s(12), 0, 0)
+ToggleLabel.BackgroundTransparency = 1
+ToggleLabel.Text = "Anti Lock"
+ToggleLabel.Font = Enum.Font.GothamSemibold
+ToggleLabel.TextSize = s(12)
+ToggleLabel.TextColor3 = getgenv().Desync and COL.TextOn or COL.TextOff
+ToggleLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local ToggleBg = Instance.new("Frame", ToggleRow)
+ToggleBg.Size = UDim2.new(0, s(36), 0, s(18))
+ToggleBg.Position = UDim2.new(1, -s(44), 0.5, -s(9))
+ToggleBg.BackgroundColor3 = getgenv().Desync and COL.ToggleBgOn or COL.ToggleBgOff
+corner(ToggleBg, 1)
+
+local ToggleDot = Instance.new("Frame", ToggleBg)
+ToggleDot.Size = UDim2.new(0, s(12), 0, s(12))
+ToggleDot.Position = getgenv().Desync and UDim2.new(0, s(21), 0.5, -s(6)) or UDim2.new(0, s(3), 0.5, -s(6))
+ToggleDot.BackgroundColor3 = COL.Dot
+corner(ToggleDot, 1)
+
+local ToggleBtn = Instance.new("TextButton", ToggleRow)
+ToggleBtn.Size = UDim2.new(1, 0, 1, 0)
+ToggleBtn.BackgroundTransparency = 1
+ToggleBtn.Text = ""
+
+local function updateToggleVisual()
+    local st = getgenv().Desync
+    TweenService:Create(ToggleDot, TweenInfo.new(0.2), {
+        Position = st and UDim2.new(0, s(21), 0.5, -s(6)) or UDim2.new(0, s(3), 0.5, -s(6))
+    }):Play()
+    TweenService:Create(ToggleBg, TweenInfo.new(0.2), {
+        BackgroundColor3 = st and COL.ToggleBgOn or COL.ToggleBgOff
+    }):Play()
+    TweenService:Create(ToggleLabel, TweenInfo.new(0.2), {
+        TextColor3 = st and COL.TextOn or COL.TextOff
+    }):Play()
+end
+
+local MethodRow = Instance.new("Frame", MainFrame)
+MethodRow.Size = UDim2.new(1, -s(20), 0, s(34))
+MethodRow.Position = UDim2.new(0, s(10), 0, s(88))
+MethodRow.BackgroundColor3 = COL.RowBg
+corner(MethodRow, s(6))
+strokeUI(MethodRow, COL.RowStroke, 1, 0)
+
+local MethodLabel = Instance.new("TextLabel", MethodRow)
+MethodLabel.Size = UDim2.new(0.4, 0, 1, 0)
+MethodLabel.Position = UDim2.new(0, s(12), 0, 0)
+MethodLabel.BackgroundTransparency = 1
+MethodLabel.Text = "Method"
+MethodLabel.Font = Enum.Font.GothamSemibold
+MethodLabel.TextSize = s(12)
+MethodLabel.TextColor3 = COL.TextOff
+MethodLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local MethodValue = Instance.new("TextButton", MethodRow)
+MethodValue.Size = UDim2.new(0, s(90), 0, s(22))
+MethodValue.Position = UDim2.new(1, -s(98), 0.5, -s(11))
+MethodValue.BackgroundColor3 = COL.DropdownBg
+MethodValue.BorderSizePixel = 0
+MethodValue.Text = getgenv().DirectionToShoot
+MethodValue.Font = Enum.Font.GothamBold
+MethodValue.TextSize = s(10)
+MethodValue.TextColor3 = COL.TextOn
+corner(MethodValue, s(4))
+strokeUI(MethodValue, COL.RowStroke, 1, 0)
+
+local DropdownOpen = false
+local DropdownFrame = Instance.new("Frame", MainFrame)
+DropdownFrame.Size = UDim2.new(0, s(90), 0, 0)
+DropdownFrame.Position = UDim2.new(1, -s(108), 0, s(122))
+DropdownFrame.BackgroundColor3 = COL.DropdownBg
+DropdownFrame.BorderSizePixel = 0
+DropdownFrame.ClipsDescendants = true
+DropdownFrame.ZIndex = 50
+DropdownFrame.Visible = false
+corner(DropdownFrame, s(4))
+strokeUI(DropdownFrame, COL.RowStroke, 1, 0)
+
+local DropdownList = Instance.new("UIListLayout", DropdownFrame)
+DropdownList.SortOrder = Enum.SortOrder.LayoutOrder
+DropdownList.Padding = UDim.new(0, 0)
+
+for i, d in ipairs(Directions) do
+    local optBtn = Instance.new("TextButton", DropdownFrame)
+    optBtn.Size = UDim2.new(1, 0, 0, s(24))
+    optBtn.BackgroundColor3 = COL.DropdownBg
+    optBtn.BorderSizePixel = 0
+    optBtn.Text = d.Name
+    optBtn.Font = Enum.Font.GothamSemibold
+    optBtn.TextSize = s(10)
+    optBtn.TextColor3 = COL.TextOn
+    optBtn.ZIndex = 51
+    optBtn.LayoutOrder = i
+
+    optBtn.MouseEnter:Connect(function()
+        TweenService:Create(optBtn, TweenInfo.new(0.15), {BackgroundColor3 = COL.DropdownHover}):Play()
+    end)
+    optBtn.MouseLeave:Connect(function()
+        TweenService:Create(optBtn, TweenInfo.new(0.15), {BackgroundColor3 = COL.DropdownBg}):Play()
+    end)
+
+    optBtn.MouseButton1Click:Connect(function()
+        playClick()
+        getgenv().DirectionToShoot = d.Name
+        DesyncDirection = d.Value
+        MethodValue.Text = d.Name
+        DropdownOpen = false
+        TweenService:Create(DropdownFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Size = UDim2.new(0, s(90), 0, 0)
+        }):Play()
+        task.delay(0.2, function()
+            DropdownFrame.Visible = false
+        end)
+        saveSettings()
+    end)
+end
+
+MethodValue.MouseButton1Click:Connect(function()
+    playClick()
+    DropdownOpen = not DropdownOpen
+    if DropdownOpen then
+        DropdownFrame.Visible = true
+        local totalH = #Directions * s(24)
+        TweenService:Create(DropdownFrame, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Size = UDim2.new(0, s(90), 0, totalH)
+        }):Play()
+    else
+        TweenService:Create(DropdownFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Size = UDim2.new(0, s(90), 0, 0)
+        }):Play()
+        task.delay(0.2, function()
+            DropdownFrame.Visible = false
+        end)
+    end
+end)
+
+local StatusRow = Instance.new("Frame", MainFrame)
+StatusRow.Size = UDim2.new(1, -s(20), 0, s(34))
+StatusRow.Position = UDim2.new(0, s(10), 0, s(130))
+StatusRow.BackgroundColor3 = COL.RowBg
+corner(StatusRow, s(6))
+strokeUI(StatusRow, COL.RowStroke, 1, 0)
+
+local StatusLabel = Instance.new("TextLabel", StatusRow)
+StatusLabel.Size = UDim2.new(0.5, 0, 1, 0)
+StatusLabel.Position = UDim2.new(0, s(12), 0, 0)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = "Status"
+StatusLabel.Font = Enum.Font.GothamSemibold
+StatusLabel.TextSize = s(12)
+StatusLabel.TextColor3 = COL.TextOff
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local StatusValue = Instance.new("TextLabel", StatusRow)
+StatusValue.Size = UDim2.new(0, s(40), 0, s(18))
+StatusValue.Position = UDim2.new(1, -s(48), 0.5, -s(9))
+StatusValue.BackgroundColor3 = getgenv().Desync and COL.StatusOn or COL.StatusOff
+StatusValue.BorderSizePixel = 0
+StatusValue.Text = getgenv().Desync and "ON" or "OFF"
+StatusValue.Font = Enum.Font.GothamBlack
+StatusValue.TextSize = s(9)
+StatusValue.TextColor3 = COL.TextOn
+corner(StatusValue, s(4))
+
+local function updateStatusVisual()
+    local st = getgenv().Desync
+    TweenService:Create(StatusValue, TweenInfo.new(0.2), {
+        BackgroundColor3 = st and COL.StatusOn or COL.StatusOff
+    }):Play()
+    StatusValue.Text = st and "ON" or "OFF"
+end
+
+local KeybindRow = Instance.new("Frame", MainFrame)
+KeybindRow.Size = UDim2.new(1, -s(20), 0, s(34))
+KeybindRow.Position = UDim2.new(0, s(10), 0, s(172))
+KeybindRow.BackgroundColor3 = COL.RowBg
+corner(KeybindRow, s(6))
+strokeUI(KeybindRow, COL.RowStroke, 1, 0)
+
+local KeybindLabel = Instance.new("TextLabel", KeybindRow)
+KeybindLabel.Size = UDim2.new(0.5, 0, 1, 0)
+KeybindLabel.Position = UDim2.new(0, s(12), 0, 0)
+KeybindLabel.BackgroundTransparency = 1
+KeybindLabel.Text = "Keybind"
+KeybindLabel.Font = Enum.Font.GothamSemibold
+KeybindLabel.TextSize = s(12)
+KeybindLabel.TextColor3 = COL.TextOff
+KeybindLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local KeybindValue = Instance.new("TextButton", KeybindRow)
+KeybindValue.Size = UDim2.new(0, s(50), 0, s(22))
+KeybindValue.Position = UDim2.new(1, -s(58), 0.5, -s(11))
+KeybindValue.BackgroundColor3 = COL.DropdownBg
+KeybindValue.BorderSizePixel = 0
+KeybindValue.Text = getgenv().KeyBind.Name
+KeybindValue.Font = Enum.Font.GothamBold
+KeybindValue.TextSize = s(10)
+KeybindValue.TextColor3 = COL.TextOn
+corner(KeybindValue, s(4))
+strokeUI(KeybindValue, COL.RowStroke, 1, 0)
+
+local WaitingForKeybind = false
+
+KeybindValue.MouseButton1Click:Connect(function()
+    playClick()
+    WaitingForKeybind = true
+    KeybindValue.Text = "..."
+    TweenService:Create(KeybindValue, TweenInfo.new(0.15), {
+        BackgroundColor3 = COL.ToggleBgOn
+    }):Play()
+end)
+
+local Div2 = Instance.new("Frame", MainFrame)
+Div2.Size = UDim2.new(1, -s(20), 0, math.max(1, s(1)))
+Div2.Position = UDim2.new(0, s(10), 0, s(218))
+Div2.BackgroundColor3 = COL.Div
+Div2.BorderSizePixel = 0
+
+local SectionLabel = Instance.new("TextLabel", MainFrame)
+SectionLabel.Size = UDim2.new(1, -s(20), 0, s(14))
+SectionLabel.Position = UDim2.new(0, s(14), 0, s(224))
+SectionLabel.BackgroundTransparency = 1
+SectionLabel.Text = "Delta + Synapse Z + Potassium + Seliware + Volt Desync"
+SectionLabel.Font = Enum.Font.GothamSemibold
+SectionLabel.TextSize = s(8)
+SectionLabel.TextColor3 = COL.TextOff
+SectionLabel.TextXAlignment = Enum.TextXAlignment.Left
+SectionLabel.TextWrapped = true
+
+local ActivateBtn = Instance.new("TextButton", MainFrame)
+ActivateBtn.Size = UDim2.new(1, -s(20), 0, s(34))
+ActivateBtn.Position = UDim2.new(0, s(10), 0, s(248))
+ActivateBtn.BackgroundColor3 = COL.ButtonBg
+ActivateBtn.BorderSizePixel = 0
+ActivateBtn.Text = "Activate Desync"
+ActivateBtn.Font = Enum.Font.GothamBlack
+ActivateBtn.TextSize = s(12)
+ActivateBtn.TextColor3 = COL.TextOn
+corner(ActivateBtn, s(6))
+strokeUI(ActivateBtn, COL.RowStroke, 1, 0)
+
+local DesyncActivated = false
+local DesyncActivateCount = 0
+
+ActivateBtn.MouseEnter:Connect(function()
+    if not DesyncActivated then
+        TweenService:Create(ActivateBtn, TweenInfo.new(0.15), {BackgroundColor3 = COL.ButtonHover}):Play()
+    end
+end)
+ActivateBtn.MouseLeave:Connect(function()
+    if not DesyncActivated then
+        TweenService:Create(ActivateBtn, TweenInfo.new(0.15), {BackgroundColor3 = COL.ButtonBg}):Play()
+    end
+end)
+
+local function executeRaknetHook()
+    return pcall(function()
+        raknet.add_send_hook(function(packet)
+            if packet.PacketId == 0x1B then
+                local data = packet.AsBuffer
+                buffer.writeu32(data, 1, 0xFFFFFFFF)
+                packet:SetData(data)
+            end
+        end)
+    end)
+end
+
+ActivateBtn.MouseButton1Click:Connect(function()
+    playClick()
+
+    if DesyncActivated then
+        showDesyncNotification("Desync is already activated!", "on", 3)
+        return
+    end
+
+    DesyncActivateCount = DesyncActivateCount + 1
+
+    if DesyncActivateCount == 1 then
+        showDesyncNotification("Make sure to use one of the following executors: Delta, Synapse Z, Potassium, Seliware, or Volt Desync, and enable the RakNet Library in your executor, or it won't work!", "warn", 8)
+        executeRaknetHook()
+        ActivateBtn.Text = "Press Again to Confirm"
+        TweenService:Create(ActivateBtn, TweenInfo.new(0.3), {BackgroundColor3 = Color3.fromRGB(200, 150, 30)}):Play()
+        return
+    end
+
+    if DesyncActivateCount >= 2 then
+        local success = executeRaknetHook()
+
+        if success then
+            DesyncActivated = true
+            ActivateBtn.Text = "Performing Sequence..."
+            TweenService:Create(ActivateBtn, TweenInfo.new(0.3), {BackgroundColor3 = Color3.fromRGB(200, 150, 30)}):Play()
+            showDesyncNotification("Performing desync sequence...", "warn", 3)
+
+            task.spawn(function()
+                performDesyncSequence()
+                createServerBall()
+
+                ActivateBtn.Text = "Desync Activated"
+                TweenService:Create(ActivateBtn, TweenInfo.new(0.3), {BackgroundColor3 = Color3.fromRGB(40, 120, 40)}):Play()
+                showDesyncNotification("Desync successfully activated!", "on", 4)
+            end)
+        else
+            DesyncActivateCount = 0
+            ActivateBtn.Text = "Activate Desync"
+            TweenService:Create(ActivateBtn, TweenInfo.new(0.3), {BackgroundColor3 = COL.ButtonBg}):Play()
+            showDesyncNotification("Failed! RakNet Library not found. Enable it in your executor.", "off", 6)
+        end
+    end
+end)
+
+MainFrame.Size = UDim2.new(0, 0, 0, 0)
+TweenService:Create(MainFrame, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+    Size = UDim2.new(0, panelW, 0, panelH)
+}):Play()
+
+local function toggleDesync()
+    getgenv().Desync = not getgenv().Desync
+    updateToggleVisual()
+    updateStatusVisual()
+    saveSettings()
+    if getgenv().Desync then
+        showDesyncNotification("Anti Lock: ON", "on", 4)
+    else
+        showDesyncNotification("Anti Lock: OFF", "off", 4)
+    end
+end
+
+ToggleBtn.MouseButton1Click:Connect(function()
+    playClick()
+    toggleDesync()
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if WaitingForKeybind then
+        if input.KeyCode ~= Enum.KeyCode.Unknown then
+            getgenv().KeyBind = input.KeyCode
+            KeybindValue.Text = input.KeyCode.Name
+            WaitingForKeybind = false
+            TweenService:Create(KeybindValue, TweenInfo.new(0.15), {
+                BackgroundColor3 = COL.DropdownBg
+            }):Play()
+            playClick()
+            saveSettings()
+        end
+        return
+    end
+    if input.KeyCode == getgenv().KeyBind then
+        toggleDesync()
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    if ServerBall and ServerBall.Parent and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        local root = LocalPlayer.Character.HumanoidRootPart
+        local dist = (root.Position - ServerBall.Position).Magnitude
+        local bg = ServerBall:FindFirstChild("BillboardGui")
+        if bg then
+            local dl = bg:FindFirstChild("DistLabel")
+            if dl then
+                dl.Text = math.floor(dist) .. " studs"
+            end
+        end
+    end
+end)
+
+if getgenv().Desync then
+    updateToggleVisual()
+    updateStatusVisual()
+    showDesyncNotification("Anti Lock: ON (Restored)", "on", 5)
+else
+    showDesyncNotification("Anti Lock activated (Press " .. getgenv().KeyBind.Name .. ")", "on", 5)
+end
+
+RunService.Heartbeat:Connect(function()
+    if not getgenv().Desync then return end
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    local Root = LocalPlayer.Character.HumanoidRootPart
+    OriginalVelocity = Root.Velocity
+    local Strength = 25000 + math.random(1000, 4000)
+    Root.Velocity = DesyncDirection * Strength + Vector3.new(math.random(-2, 2), math.random(-1, 3), math.random(-2, 2))
+    RunService.RenderStepped:Wait()
+    Root.Velocity = OriginalVelocity
+end)
