@@ -1,6 +1,6 @@
-getgenv().Desync = false
-getgenv().KeyBind = Enum.KeyCode.M
-getgenv().DirectionToShoot = "Behind"
+getgenv().Desync = getgenv().Desync or false
+getgenv().KeyBind = getgenv().KeyBind or Enum.KeyCode.M
+getgenv().DirectionToShoot = getgenv().DirectionToShoot or "Behind"
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -10,6 +10,10 @@ local SoundService = game:GetService("SoundService")
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
+
+local Shared = getgenv().SchmecktHubPC or {}
+getgenv().SchmecktHubPC = Shared
+local key = "DesyncPanel"
 
 local OriginalVelocity = nil
 local DesyncDirection = Vector3.new(0, 0, -1)
@@ -51,9 +55,9 @@ local function loadSettings()
             local raw = readfile(SAVE_FILE)
             local data = HttpService:JSONDecode(raw)
             if data.KeyBind then
-                local ok, key = pcall(function() return Enum.KeyCode[data.KeyBind] end)
-                if ok and key then
-                    getgenv().KeyBind = key
+                local ok, keycode = pcall(function() return Enum.KeyCode[data.KeyBind] end)
+                if ok and keycode then
+                    getgenv().KeyBind = keycode
                 end
             end
             if data.Direction then
@@ -134,6 +138,14 @@ local function strokeUI(inst, color, thickness, transparency)
     st.Parent = inst
     return st
 end
+
+Shared.Connections = Shared.Connections or {}
+if Shared.Connections[key] then
+    for _, c in pairs(Shared.Connections[key]) do
+        pcall(function() c:Disconnect() end)
+    end
+end
+Shared.Connections[key] = {}
 
 if LocalPlayer:WaitForChild("PlayerGui"):FindFirstChild("DesyncNotifyGui") then
     LocalPlayer.PlayerGui.DesyncNotifyGui:Destroy()
@@ -723,7 +735,7 @@ ActivateBtn.MouseButton1Click:Connect(function()
     DesyncActivateCount = DesyncActivateCount + 1
 
     if DesyncActivateCount == 1 then
-        showDesyncNotification("Make sure to use one of the following executors: Delta, Synapse Z, Potassium, Seliware, or Volt Desync, and enable the RakNet Library in your executor, or it won't work!", "warn", 8)
+        showDesyncNotification("Use Delta / Synapse Z / Potassium / Seliware / Volt with RakNet library enabled, otherwise it won't work!", "warn", 8)
         executeRaknetHook()
         ActivateBtn.Text = "Press Again to Confirm"
         TweenService:Create(ActivateBtn, TweenInfo.new(0.3), {BackgroundColor3 = Color3.fromRGB(200, 150, 30)}):Play()
@@ -778,8 +790,9 @@ ToggleBtn.MouseButton1Click:Connect(function()
     toggleDesync()
 end)
 
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
+local kbConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
+    if Shared.DesyncPanel == false then return end
     if WaitingForKeybind then
         if input.KeyCode ~= Enum.KeyCode.Unknown then
             getgenv().KeyBind = input.KeyCode
@@ -797,8 +810,9 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         toggleDesync()
     end
 end)
+table.insert(Shared.Connections[key], kbConn)
 
-RunService.Heartbeat:Connect(function()
+local distConn = RunService.Heartbeat:Connect(function()
     if ServerBall and ServerBall.Parent and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
         local root = LocalPlayer.Character.HumanoidRootPart
         local dist = (root.Position - ServerBall.Position).Magnitude
@@ -811,16 +825,9 @@ RunService.Heartbeat:Connect(function()
         end
     end
 end)
+table.insert(Shared.Connections[key], distConn)
 
-if getgenv().Desync then
-    updateToggleVisual()
-    updateStatusVisual()
-    showDesyncNotification("Anti Lock: ON (Restored)", "on", 5)
-else
-    showDesyncNotification("Anti Lock activated (Press " .. getgenv().KeyBind.Name .. ")", "on", 5)
-end
-
-RunService.Heartbeat:Connect(function()
+local desyncLoop = RunService.Heartbeat:Connect(function()
     if not getgenv().Desync then return end
     if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
     local Root = LocalPlayer.Character.HumanoidRootPart
@@ -830,3 +837,32 @@ RunService.Heartbeat:Connect(function()
     RunService.RenderStepped:Wait()
     Root.Velocity = OriginalVelocity
 end)
+table.insert(Shared.Connections[key], desyncLoop)
+
+local cleanupListener
+cleanupListener = RunService.RenderStepped:Connect(function()
+    if not Shared.DesyncPanel then
+        getgenv().Desync = false
+        if PanelGui then PanelGui:Destroy() end
+        if LocalPlayer.PlayerGui:FindFirstChild("DesyncNotifyGui") then
+            LocalPlayer.PlayerGui.DesyncNotifyGui:Destroy()
+        end
+        removeServerBall()
+        if cleanupListener then cleanupListener:Disconnect() end
+        if Shared.Connections[key] then
+            for _, c in pairs(Shared.Connections[key]) do
+                pcall(function() c:Disconnect() end)
+            end
+            Shared.Connections[key] = {}
+        end
+    end
+end)
+table.insert(Shared.Connections[key], cleanupListener)
+
+if getgenv().Desync then
+    updateToggleVisual()
+    updateStatusVisual()
+    showDesyncNotification("Anti Lock: ON (Restored)", "on", 5)
+else
+    showDesyncNotification("Anti Lock activated (Press " .. getgenv().KeyBind.Name .. ")", "on", 5)
+end
